@@ -1,0 +1,31 @@
+{
+  "source": "untrace-drive 73bf7f21658b743422d2670abe99817dc545d1c1",
+  "keys": [
+    {
+      "secretHex": "0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20",
+      "oauthSecret": "WKQRlxMXONoje8EKnsUlmRVYZPCChszN0DyBKhj52gk",
+      "oauthHash": "0537e8e110ca5fb9ec1ee82b37fa923fac2e6f6f9fda7a2bb3feac0f20790216",
+      "boxPublicKey": "2SQGbCowORg1BNrb4ktkaXmePW4z4/bO5UbZh6r4SHg="
+    },
+    {
+      "secretHex": "abababababababababababababababababababababababababababababababab",
+      "oauthSecret": "I1o83n8ToBBAhzE3awrCoz8G_iBXbPjqQL6A_LQuSCY",
+      "oauthHash": "3cafb645595ce0e0f83c63a83883ebf942bc79f4682747e291d23e6b2afce6ef",
+      "boxPublicKey": "0yqhjsepvXhZSRJXr4BLlf2FaSDOBwOl7Ll1o9WDzBk="
+    },
+    {
+      "secretHex": "0000000000000000000000000000000000000000000000000000000000000000",
+      "oauthSecret": "l7ccEh2ZgZUFfYund1vVx5c8KLnVJGBoOwkmh4T2Jfs",
+      "oauthHash": "e956e9b9ba0bd12d7855c028f9097708b4f4013632a8d6e85ddee84251746852",
+      "boxPublicKey": "2ED2QmEdL2FaUvlQK0Di9MIGTHI7wceceMbhGthJCTw="
+    }
+  ],
+  "ute1": {
+    "fileKey": "fffefdfcfbfaf9f8f7f6f5f4f3f2f1f0efeeedecebeae9e8e7e6e5e4e3e2e1e0",
+    "chunkBytes": 7,
+    "plaintext": "Untrace UTE1 vector: three chunks of seven bytes, plus a tail.",
+    "sealed": "555445310100000007000000000000003ebc1cacd6f7d82fdcf0e10e255ed348a942d687f44676962bde980068b9ca3ee8df079cedef93493ea24683134d23a7b9d2bc5c42e1f34d618b1cf4f3e28199865bf848ecf98ef1832180048e91c8b49640bd9cf405f28da69bba963d2967d98c82483c80378424723f2157dfe68f28e5cd4f96f99d957d245de734b07a41d8ef60a0931724f5d3686da03eb0c39770a477e5e151a87542b0e32f14fbdf180959ae04d5c28340851bb2c94f5c91f8842002b4bdabf017fe3369b3c881479d24e10eea610aa15a33a7d4196c3dbb180021c2b70412e8c59b23ebb641cb54eec63c9d88a2dd34740e599a9246cb2c8444d5dc18951aa1f765eb4b50c7d4a2a9ccf507505fe0a056080b870a93bb123c59131c983e7ea362167080dbb7fdd28dccbd4434d4035a465c5599f1ae0a08bf16c9f6e12f398141675371ad",
+    "empty": "5554453101000000070000000000000000",
+    "sealedKeyToClient0": "EEfjFpdNtLfZvWr24mIlRzRRXwpJj7VE6n4x2526xE0csjKLPpXW7h1xZc3yyIoouu5vb9WqBQGf4Q3z/SAYVhl3kYdHswIplmFO3CuUkAUB1HkJWaaDVH5NI8pvKgKytMsYXXHOvTU="
+  }
+}

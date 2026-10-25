@@ -1,0 +1,43 @@
+name: Release (verify)
+# A v* tag push NEVER publishes. It builds, tests, checks the tarballs and runs
+# `npm publish --dry-run`. No npm token and no OIDC token are available here.
+# The real publish is .github/workflows/publish.yml: manual (workflow_dispatch),
+# typed version confirmation, and the `npm-publish` environment (JC approves).
+# See docs/RELEASING.md.
+on:
+  push:
+    tags: ["v*"]
+permissions:
+  contents: read
+concurrency:
+  group: release-verify-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+          cache: npm
+      - name: Tag matches package versions
+        run: node scripts/check-versions.mjs "${GITHUB_REF_NAME#v}"
+      - run: npm ci --no-audit --no-fund
+      - run: npm run build
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run pack:check
+      - name: npm publish --dry-run (nothing is uploaded)
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          dist_tag=latest
+          case "$tag" in *-*) dist_tag=next ;; esac
+          for p in core next react vue; do
+            npm publish -w "packages/$p" --dry-run --ignore-scripts --access public --tag "$dist_tag"
+          done
+      - name: Next step
+        run: echo "Verified ${GITHUB_REF_NAME}. Nothing was published. To publish, run the 'Publish to npm' workflow on this tag (needs JC's approval)."

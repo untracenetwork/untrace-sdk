@@ -1,0 +1,87 @@
+/**
+ * @untracenetwork/sdk: a thin, typed client for the Untrace Drive API v1.
+ *
+ * Server side only: it holds your client secret. Browser code uses
+ * @untracenetwork/react or @untracenetwork/vue against your own route
+ * (see @untracenetwork/sdk/backend).
+ */
+export {
+  UntraceClient,
+  FilesApi,
+  FoldersApi,
+  KeysApi,
+  SharesApi,
+  DEFAULT_BASE_URL,
+  MAX_UPLOAD_BODY_BYTES,
+  CLIENT_ID_RE,
+  UUID_RE,
+  USERNAME_RE,
+  KEY_TYPES,
+  GRANT_ROLES,
+  ENTRY_ROLES,
+  SCOPES,
+  isRetryable,
+  backoffDelay,
+  parseMetering,
+  type CallOptions,
+  type ListOptions,
+  type UntraceClientOptions,
+  type TokenInfo,
+  type Metering,
+  type Scope,
+  type FileSummary,
+  type FileWithKey,
+  type FileList,
+  type Folder,
+  type FolderList,
+  type CreateFolderInput,
+  type KeyEntry,
+  type KeyType,
+  type GrantRole,
+  type EntryRole,
+  type AttachKeyInput,
+  type ResourceType,
+  type ResourceRef,
+  type Share,
+  type OfferShareInput,
+  type AcceptShareInput,
+  type UserShareKey,
+  type OwnerShareKey,
+  type TokenResponse,
+  type UploadInput,
+  type UploadResult,
+  type DownloadResult,
+} from "./client"
+export * from "./errors"
+export {
+  CLIENT_OAUTH_INFO,
+  CLIENT_BOX_INFO,
+  FOLDER_BOX_INFO,
+  CLIENT_SECRET_PREFIX,
+  SHARE_KEY_SIGN_PREFIX,
+  deriveClientKeys,
+  deriveOAuthClientSecret,
+  deriveFolderBoxKeys,
+  openKeyPath,
+  parseClientSecret,
+  exportClientSecret,
+  sealToPublicKey,
+  openSealed,
+  verifyShareKey,
+  randomBytes,
+  type ClientKeys,
+} from "./crypto"
+export {
+  encryptUte1,
+  decryptUte1,
+  newFileKey,
+  parseUte1Header,
+  ute1SealedLength,
+  FILE_KEY_BYTES,
+  UTE1_DEFAULT_CHUNK_BYTES,
+  UTE1_MAX_CHUNK_BYTES,
+  UTE1_HEADER_BYTES,
+  type Ute1Header,
+} from "./ute1"
+export { OPERATIONS, CONTRACT_VERSION, CONTRACT_COMMIT, type OperationId } from "./generated/operations"
+export type { paths, components, operations } from "./generated/openapi"

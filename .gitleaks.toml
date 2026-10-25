@@ -1,0 +1,8 @@
+# Placeholders and fixed, public test vectors (derived from secrets like 0x0102..20). Not real keys.
+[extend]
+useDefault = true
+
+[allowlist]
+description = "SDK placeholders and deterministic test vectors"
+paths = ['''packages/core/test/drive-vectors\.json''', '''packages/core/test/.*\.test\.ts''']
+regexes = ['''untrace_sk_v1_(\.\.\.|xx)''']

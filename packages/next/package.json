@@ -1,0 +1,67 @@
+{
+  "name": "@untracenetwork/next",
+  "version": "2.0.0",
+  "description": "Server-only Next.js helpers for Untrace Drive: route handler factory and server actions.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/untracenetwork/untrace-sdk.git",
+    "directory": "packages/next"
+  },
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      },
+      "require": {
+        "types": "./dist/index.d.cts",
+        "default": "./dist/index.cjs"
+      }
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "sideEffects": false,
+  "scripts": {
+    "build": "tsup",
+    "typecheck": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "@untracenetwork/sdk": "^2.0.0"
+  },
+  "peerDependencies": {
+    "next": ">=13.4"
+  },
+  "peerDependenciesMeta": {
+    "next": {
+      "optional": true
+    }
+  },
+  "homepage": "https://github.com/untracenetwork/untrace-sdk#readme",
+  "bugs": {
+    "url": "https://github.com/untracenetwork/untrace-sdk/issues"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
+  "keywords": [
+    "untrace",
+    "untrace-drive",
+    "encrypted-storage",
+    "end-to-end-encryption",
+    "sdk"
+  ]
+}

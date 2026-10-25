@@ -1,0 +1,36 @@
+{
+  "name": "untrace-sdk",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "packages/core",
+    "packages/next",
+    "packages/react",
+    "packages/vue"
+  ],
+  "scripts": {
+    "build": "npm run build -w packages/core && npm run build -w packages/next -w packages/react -w packages/vue",
+    "typecheck": "npm run typecheck --workspaces && tsc -p examples/tsconfig.json",
+    "test": "vitest run",
+    "gen:types": "node scripts/gen-types.mjs",
+    "check:types": "node scripts/gen-types.mjs --check",
+    "check:public": "node scripts/check-public.mjs",
+    "pack:check": "node scripts/check-pack.mjs",
+    "test:live": "vitest run --config vitest.live.config.ts"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "@types/react": "^19.0.0",
+    "openapi-typescript": "7.13.0",
+    "react": "^19.0.0",
+    "tsup": "^8.5.0",
+    "typescript": "~5.9.3",
+    "vitest": "^5.0.3",
+    "vue": "^3.5.0",
+    "yaml": "^2.9.1"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "version": "2.0.0"
+}

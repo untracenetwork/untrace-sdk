@@ -1,0 +1,1223 @@
+openapi: 3.1.0
+info:
+  title: Untrace Drive API
+  version: 1.2.0
+  summary: Store, share and fetch end-to-end encrypted files in Untrace Drive.
+  description: |
+    The public API of Untrace Drive, version 1.
+
+    How it works, in three lines:
+
+    1. Your code encrypts each file on your own machine with one standard step
+       (AES-256-GCM, framed as `UTE1`, see "Client-side encryption" below).
+    2. Drive receives ciphertext only and stores it across 6 regions; any 3 recover the file.
+    3. On download, Drive returns the same ciphertext and the file key sealed to
+       your key. Only your machine can unseal it. We cannot read your files.
+
+    Authentication is OAuth 2.0 client credentials: exchange your client id and
+    client secret for a Bearer token that lasts 15 minutes.
+
+    Every operation is marked with `x-status`:
+
+    - `live`: implemented on this version of Drive.
+    - `planned`: part of the contract, not available yet. Calling it returns 404.
+
+    Errors always have the body `{ "error": "<code>", "message": "<text>" }`.
+
+    ## Client credentials
+
+    A developer key is created in Drive (Settings, Developer keys) and shown once
+    as a client id (`utc_...`) and a client secret (`untrace_sk_v1_...`). The
+    secret never leaves your machine. Your code derives three values from it with
+    HKDF-SHA256 (empty salt, 32 bytes each):
+
+    | info label | use |
+    |---|---|
+    | `untrace:client-key:oauth:v1` | the OAuth `client_secret` sent to the token endpoint (base64url, no padding) |
+    | `untrace:client-key:box:v1` | X25519 key pair; file keys are sealed to its public key |
+    | `untrace:client-key:sign:v1` | Ed25519 key pair; identifies the key |
+
+    Because only the derived OAuth value travels, Drive can never compute the box
+    key, so it can never open a file key sealed to you.
+
+    ## Client-side encryption (UTE1)
+
+    Each file gets a fresh random 32-byte file key. The plaintext is sealed with
+    AES-256-GCM in chunks:
+
+    ```
+    header (17 bytes)
+      [0..3]   "UTE1" (ASCII)
+      [4]      version, 0x01
+      [5..8]   chunk size in plaintext bytes, uint32 big-endian, 1..16777216
+      [9..16]  total plaintext length, uint64 big-endian
+    then, for chunk i = 0, 1, ... (ceil(total / chunk size) chunks):
+      12-byte random IV | ciphertext | 16-byte GCM tag
+      additional authenticated data = header (17 bytes) || i as uint32 big-endian
+    ```
+
+    The header fixes the exact length of the body, so a truncated or padded body
+    is refused. Never reuse an IV with the same file key.
+
+    ## Sealed keys
+
+    A sealed key is the 32-byte file key sealed to an X25519 public key:
+    `base64(ephemeral public key (32) || nonce (24) || XSalsa20-Poly1305 box (48))`,
+    the NaCl `box` construction with a fresh ephemeral key pair per seal.
+
+    On upload you send two sealed keys: one to your own box public key, and one
+    to the Drive owner's sharing key (`GET /api/v1/owner/share-key`, verify its
+    signature first). Drive stores sealed keys only.
+
+    ## Folders and key entries
+
+    Folders nest up to 32 levels. A folder or a file holds key entries: a key
+    (an account passkey, a client credential, or a hardware key the user
+    holds), a role (`admin`, `editor`, `viewer`, or `none` for an explicit
+    block), scopes, and the folder or file key sealed to that key.
+
+    Access is resolved from the top folder down to the target, folders first,
+    then the file. The nearest explicit entry for your key wins, a block
+    included: a block on a subfolder beats a grant above it, and a grant on a
+    subfolder beats a block above it. The owner always has full access and can
+    never be blocked, changed or removed by anyone else. No entry means no
+    access. If access cannot be worked out (for example a temporary outage) the
+    answer is 503, never an allow.
+
+    A folder has its own X25519 key pair derived from a random folder key.
+    Each subfolder and each file in it carries its key sealed to the folder's
+    public key (`boxPublicKey`), so one sealed key on a folder opens everything
+    under it. The responses give you `sealedKey` (the key of the folder or file
+    where your winning entry sits, sealed to you) and `keyPath` (the sealed keys
+    to open in order below it, down to the target).
+
+    A folder or file your key cannot reach answers exactly like one that does
+    not exist: 404 `not_found`.
+  license:
+    name: Apache-2.0
+    identifier: Apache-2.0
+  contact:
+    name: Untrace Network
+    url: https://untrace.network
+servers:
+  - url: https://drive.untrace.network
+    description: Production
+security:
+  - bearerAuth: []
+tags:
+  - name: Auth
+    description: OAuth 2.0 client credentials.
+  - name: Files
+    description: Files your key can reach.
+  - name: Content
+    description: Upload and download encrypted file content.
+  - name: Folders
+    description: Folders and subfolders.
+  - name: Keys
+    description: Key entries on a folder or file (passkey, client credential, hardware key).
+  - name: Sharing
+    description: Share with another user, who attaches their own key.
+  - name: Owner
+    description: The Drive account that owns your key.
+
+paths:
+  /api/v1/oauth/token:
+    post:
+      tags: [Auth]
+      operationId: createToken
+      x-status: live
+      summary: Exchange client credentials for a Bearer token
+      description: |
+        OAuth 2.0 client credentials grant (RFC 6749 section 4.4). Send the client
+        id and the derived OAuth client secret (see "Client credentials"), either
+        in the form body or as HTTP Basic auth. The token lasts 15 minutes; get a
+        new one when a call answers 401 `token_expired`.
+
+        The account that owns the key needs an active plan: without one this
+        returns 402 `payment_required`.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: "#/components/schemas/TokenRequest"
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TokenRequest"
+      parameters:
+        - name: Authorization
+          in: header
+          required: false
+          description: Optional HTTP Basic auth, `Basic base64(client_id:client_secret)`, instead of body fields.
+          schema:
+            type: string
+      responses:
+        "200":
+          description: A Bearer token.
+          headers:
+            Cache-Control:
+              schema: { type: string, const: no-store }
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TokenResponse"
+        "400":
+          description: "`invalid_request` (malformed body), `unsupported_grant_type` or `invalid_scope` (a scope the key does not hold)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/OAuthError" }
+        "401":
+          description: "`invalid_client`: unknown or revoked client, or wrong secret. All look the same."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/OAuthError" }
+        "402":
+          $ref: "#/components/responses/PaymentRequired"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "503":
+          $ref: "#/components/responses/Unavailable"
+
+  /api/v1/owner/share-key:
+    get:
+      tags: [Owner]
+      operationId: getOwnerShareKey
+      x-status: live
+      summary: The owner's sharing public key
+      description: |
+        The X25519 public key of the Drive account that owns your key, and that
+        account's signature over `untrace:share-key:v1:` + publicKey. Verify the
+        signature (Ed25519 over the UTF-8 message, by the wallet address decoded
+        from base58) before sealing a file key to it.
+      responses:
+        "200":
+          description: The owner's sharing key.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/OwnerShareKey" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+
+  /api/v1/files:
+    get:
+      tags: [Files]
+      operationId: listFiles
+      x-status: live
+      summary: List files your key can reach
+      description: |
+        Without `folderId`: files your key holds a key entry on directly,
+        oldest id first, paged by cursor. With `folderId`: files directly in
+        that folder that your key reaches (a block on a file hides it).
+      parameters:
+        - name: cursor
+          in: query
+          required: false
+          description: The `nextCursor` of the previous page.
+          schema: { type: string, format: uuid }
+        - name: limit
+          in: query
+          required: false
+          schema: { type: integer, minimum: 1, maximum: 200, default: 100 }
+        - name: folderId
+          in: query
+          required: false
+          description: Only files directly in this folder. Omit for the files your key holds an entry on.
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: One page of files.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/FileList" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+
+  /api/v1/files/upload:
+    post:
+      tags: [Content]
+      operationId: uploadFile
+      x-status: live
+      summary: Upload an encrypted file
+      description: |
+        The body is the UTE1 ciphertext of the file, nothing else. Drive stores it
+        across 6 regions (any 3 recover it) and registers the file in the owner's
+        Drive. Your key becomes an `editor` of the new file.
+
+        A key creates files only inside a folder it has been added to, never
+        anywhere in the owner's account (see `X-Untrace-Folder-Id`).
+
+        Needs the `upload` scope. Billed to the owner's plan: 402 when the plan
+        does not allow it, 413 when the body is over the size limit.
+      parameters:
+        - name: X-Untrace-File-Name
+          in: header
+          required: true
+          description: File name, percent-encoded UTF-8, 1 to 256 characters once decoded.
+          schema: { type: string }
+        - name: X-Untrace-File-Type
+          in: header
+          required: false
+          description: Media type of the plaintext. Default `application/octet-stream`.
+          schema: { type: string, maxLength: 128 }
+        - name: X-Untrace-Sealed-Key
+          in: header
+          required: true
+          description: The file key sealed to your key's box public key.
+          schema: { $ref: "#/components/schemas/SealedKey" }
+        - name: X-Untrace-Owner-Sealed-Key
+          in: header
+          required: true
+          description: The file key sealed to the owner's sharing key (`GET /api/v1/owner/share-key`).
+          schema: { $ref: "#/components/schemas/SealedKey" }
+        - name: X-Untrace-Folder-Id
+          in: header
+          required: true
+          description: |
+            Folder to place the file in, in your key's own Drive. Your key needs
+            role `editor` or above and the `upload` scope there (403
+            `folder_access_required` otherwise, also when the folder does not exist).
+          schema: { type: string, format: uuid }
+        - name: X-Untrace-Folder-Sealed-Key
+          in: header
+          required: true
+          description: The file key sealed to the folder's `boxPublicKey`.
+          schema: { $ref: "#/components/schemas/SealedKey" }
+      requestBody:
+        required: true
+        description: UTE1 ciphertext. At most 16 MiB in this version.
+        content:
+          application/octet-stream:
+            schema:
+              type: string
+              contentMediaType: application/octet-stream
+      responses:
+        "201":
+          description: Stored and registered.
+          headers:
+            X-Untrace-Billed-To: { $ref: "#/components/headers/BilledTo" }
+            X-Untrace-Metered-Bytes: { $ref: "#/components/headers/MeteredBytes" }
+            X-Untrace-Usage-Bytes: { $ref: "#/components/headers/UsageBytes" }
+            X-Untrace-Quota-Bytes: { $ref: "#/components/headers/QuotaBytes" }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/File" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "402": { $ref: "#/components/responses/PaymentRequired" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "413": { $ref: "#/components/responses/TooLarge" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+
+  /api/v1/files/{fileId}:
+    parameters:
+      - $ref: "#/components/parameters/FileId"
+    get:
+      tags: [Files]
+      operationId: getFile
+      x-status: live
+      summary: File metadata and your sealed key
+      responses:
+        "200":
+          description: The file.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/FileWithKey" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+    patch:
+      tags: [Files]
+      operationId: updateFile
+      x-status: live
+      summary: Rename or move a file
+      description: |
+        `name` renames the file (role `editor` or above). `folderId` moves it:
+        role `admin` on the file and on the target folder, in the same Drive,
+        with `folderSealedKey` (the file key sealed to the target folder's
+        `boxPublicKey`). `null` moves it to the top level (the owner's keys
+        only). Keys that reached the file only through the old folder lose
+        access at once.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name:
+                  type: string
+                  minLength: 1
+                  maxLength: 256
+                folderId:
+                  description: Target folder; `null` moves the file to the top level.
+                  type: [string, "null"]
+                  format: uuid
+                folderSealedKey:
+                  $ref: "#/components/schemas/SealedKey"
+                  description: Required when `folderId` is a folder. The file key sealed to its `boxPublicKey`.
+      responses:
+        "200":
+          description: Updated.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [fileId, name]
+                properties:
+                  fileId: { type: string, format: uuid }
+                  name: { type: string }
+                  folderId: { type: [string, "null"], format: uuid }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+    delete:
+      tags: [Files]
+      operationId: deleteFile
+      x-status: live
+      summary: Move a file to the trash
+      description: Needs the `delete` scope and role `admin`. Only the owner can restore or purge, from Drive.
+      responses:
+        "200":
+          description: Trashed.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [fileId, trashed]
+                properties:
+                  fileId: { type: string, format: uuid }
+                  trashed: { type: boolean, const: true }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+
+  /api/v1/files/{fileId}/content:
+    parameters:
+      - $ref: "#/components/parameters/FileId"
+    get:
+      tags: [Content]
+      operationId: downloadFile
+      x-status: live
+      summary: Download a file's ciphertext and your sealed key
+      description: |
+        Returns the UTE1 ciphertext exactly as uploaded. Your sealed file key is
+        in the `X-Untrace-Sealed-Key` header: unseal it with your box secret key,
+        then open the UTE1 body. Needs the `download` scope.
+
+        Files uploaded through this API can be downloaded here. Files created in
+        the Drive app answer 409 `unsupported_format`; open them in Drive.
+      responses:
+        "200":
+          description: The ciphertext.
+          headers:
+            X-Untrace-Sealed-Key:
+              description: The file key sealed to your key's box public key.
+              schema: { $ref: "#/components/schemas/SealedKey" }
+            X-Untrace-File-Name:
+              description: The file name, percent-encoded UTF-8.
+              schema: { type: string }
+            X-Untrace-File-Type:
+              description: The media type given at upload.
+              schema: { type: string }
+            Content-Length:
+              schema: { type: integer }
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                contentMediaType: application/octet-stream
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "402": { $ref: "#/components/responses/PaymentRequired" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+
+  /api/v1/files/{fileId}/keys:
+    parameters:
+      - $ref: "#/components/parameters/FileId"
+    get:
+      tags: [Keys]
+      operationId: listFileKeys
+      x-status: live
+      summary: List the key entries on a file
+      description: Entries set on the file itself. Access is resolved from the root folder down; the nearest explicit entry wins.
+      responses:
+        "200":
+          description: Key entries.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/KeyEntryList" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+    post:
+      tags: [Keys]
+      operationId: attachFileKey
+      x-status: live
+      summary: Attach a key entry to a file
+      description: Role `admin` or above and the `manage-sharing` scope. A key of another user is attached through Sharing, never here. Scopes are capped at your own.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/KeyEntryCreate" }
+      responses:
+        "201":
+          description: Attached.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/KeyEntry" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+
+  /api/v1/files/{fileId}/keys/{entryId}:
+    parameters:
+      - $ref: "#/components/parameters/FileId"
+      - $ref: "#/components/parameters/EntryId"
+    patch:
+      tags: [Keys]
+      operationId: changeFileKey
+      x-status: live
+      summary: Change a key entry's role or scopes
+      description: The owner's keys can never be changed by anyone else (409 `owner_immutable`). An admin of another account cannot change an admin entry (403). A block cannot become a grant; remove it and attach the key.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/KeyEntryChange" }
+      responses:
+        "200":
+          description: Changed.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/KeyEntry" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+    delete:
+      tags: [Keys]
+      operationId: removeFileKey
+      x-status: live
+      summary: Remove a key entry
+      description: The owner's keys can never be removed by anyone else (409 `owner_immutable`).
+      responses:
+        "200":
+          description: Removed.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Removed" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+
+  /api/v1/folders:
+    get:
+      tags: [Folders]
+      operationId: listFolders
+      x-status: live
+      summary: List folders
+      description: Subfolders of `parentId`, or the top-level folders your key can reach when it is omitted.
+      parameters:
+        - name: parentId
+          in: query
+          required: false
+          schema: { type: string, format: uuid }
+        - name: cursor
+          in: query
+          required: false
+          schema: { type: string, format: uuid }
+        - name: limit
+          in: query
+          required: false
+          schema: { type: integer, minimum: 1, maximum: 200, default: 100 }
+      responses:
+        "200":
+          description: One page of folders.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/FolderList" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+    post:
+      tags: [Folders]
+      operationId: createFolder
+      x-status: live
+      summary: Create a folder
+      description: |
+        At the top level of your key's own Drive (`parentId` null or omitted;
+        needs the `upload` scope; your key gets an `admin` entry on it), or
+        inside a folder where your key is `editor` or above with `upload` (the
+        new folder inherits your access there; no new entry is made).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, boxPublicKey]
+              properties:
+                name: { type: string, minLength: 1, maxLength: 256 }
+                parentId: { type: [string, "null"], format: uuid }
+                boxPublicKey:
+                  type: string
+                  description: |
+                    The folder's X25519 public key, standard base64: the key pair
+                    from HKDF-SHA256(folder key, salt = empty, info =
+                    "untrace:folder-key:box:v1", 32 bytes). Subfolders and files
+                    in this folder carry their key sealed to it.
+                sealedKey:
+                  $ref: "#/components/schemas/SealedKey"
+                  description: Top level only. A new random folder key sealed to your key's box public key.
+                ownerSealedKey:
+                  $ref: "#/components/schemas/SealedKey"
+                  description: Top level only. The same folder key sealed to the owner's sharing key.
+                parentSealedKey:
+                  $ref: "#/components/schemas/SealedKey"
+                  description: In a folder only. The new folder key sealed to the parent's `boxPublicKey`.
+      responses:
+        "201":
+          description: Created.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Folder" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "402": { $ref: "#/components/responses/PaymentRequired" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+
+  /api/v1/folders/{folderId}:
+    parameters:
+      - $ref: "#/components/parameters/FolderId"
+    get:
+      tags: [Folders]
+      operationId: getFolder
+      x-status: live
+      summary: Folder metadata and your sealed folder key
+      responses:
+        "200":
+          description: The folder.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Folder" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+    patch:
+      tags: [Folders]
+      operationId: updateFolder
+      x-status: live
+      summary: Rename or move a folder
+      description: |
+        `name` renames (role `editor` or above). `parentId` moves: role `admin`
+        on the folder and `editor` with `upload` on the target, in the same
+        Drive, with `parentSealedKey` (the folder key sealed to the target's
+        `boxPublicKey`); `null` moves it to the top level (the owner's keys
+        only, with `ownerSealedKey`). A move that would put a folder inside
+        itself or one of its subfolders is refused (409 `conflict`).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name: { type: string, minLength: 1, maxLength: 256 }
+                parentId: { type: [string, "null"], format: uuid }
+                parentSealedKey: { $ref: "#/components/schemas/SealedKey" }
+                ownerSealedKey: { $ref: "#/components/schemas/SealedKey" }
+      responses:
+        "200":
+          description: Updated.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Folder" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+    delete:
+      tags: [Folders]
+      operationId: deleteFolder
+      x-status: live
+      summary: Move a folder and its contents to the trash
+      description: Role `admin` and the `delete` scope. Subfolders and their files go to the trash with it.
+      responses:
+        "200":
+          description: Trashed.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Removed" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+
+  /api/v1/folders/{folderId}/keys:
+    parameters:
+      - $ref: "#/components/parameters/FolderId"
+    get:
+      tags: [Keys]
+      operationId: listFolderKeys
+      x-status: live
+      summary: List the key entries on a folder
+      responses:
+        "200":
+          description: Key entries.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/KeyEntryList" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+    post:
+      tags: [Keys]
+      operationId: attachFolderKey
+      x-status: live
+      summary: Attach a key entry to a folder
+      description: The entry applies to everything inside the folder unless a nearer entry says otherwise.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/KeyEntryCreate" }
+      responses:
+        "201":
+          description: Attached.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/KeyEntry" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+
+  /api/v1/folders/{folderId}/keys/{entryId}:
+    parameters:
+      - $ref: "#/components/parameters/FolderId"
+      - $ref: "#/components/parameters/EntryId"
+    patch:
+      tags: [Keys]
+      operationId: changeFolderKey
+      x-status: live
+      summary: Change a key entry's role or scopes
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/KeyEntryChange" }
+      responses:
+        "200":
+          description: Changed.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/KeyEntry" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+    delete:
+      tags: [Keys]
+      operationId: removeFolderKey
+      x-status: live
+      summary: Remove a key entry
+      responses:
+        "200":
+          description: Removed.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Removed" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+
+  /api/v1/users/{username}/share-key:
+    parameters:
+      - name: username
+        in: path
+        required: true
+        schema: { type: string, pattern: "^[a-z0-9-]{6,32}$" }
+    get:
+      tags: [Sharing]
+      operationId: getUserShareKey
+      x-status: live
+      summary: Another user's published sharing key
+      description: The public key to seal a share to, with the user's signature over it. Verify it before sealing.
+      responses:
+        "200":
+          description: The user's sharing key.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/OwnerShareKey" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+
+  /api/v1/shares:
+    post:
+      tags: [Sharing]
+      operationId: createShare
+      x-status: live
+      summary: Offer a folder or file to another user
+      description: |
+        Creates a pending share for `username`, carrying the folder or file key
+        sealed to that user's published sharing key. Nothing is attached yet: the
+        recipient attaches their OWN key when they accept. Nobody can attach a key
+        in someone else's name.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [resourceType, resourceId, username, role, sealedKey]
+              properties:
+                resourceType: { type: string, enum: [folder, file] }
+                resourceId: { type: string, format: uuid }
+                username: { type: string, pattern: "^[a-z0-9-]{6,32}$" }
+                role: { $ref: "#/components/schemas/Role" }
+                sealedKey: { $ref: "#/components/schemas/SealedKey" }
+      responses:
+        "201":
+          description: Offered.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Share" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+
+  /api/v1/shares/incoming:
+    get:
+      tags: [Sharing]
+      operationId: listIncomingShares
+      x-status: live
+      summary: Shares offered to the account that owns your key
+      responses:
+        "200":
+          description: Pending shares.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [shares]
+                properties:
+                  shares:
+                    type: array
+                    items: { $ref: "#/components/schemas/Share" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+
+  /api/v1/shares/{shareId}/accept:
+    parameters:
+      - name: shareId
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    post:
+      tags: [Sharing]
+      operationId: acceptShare
+      x-status: live
+      summary: Accept a share by attaching your own key
+      description: Unseal the offered key with your sharing key, seal it to your own key, and attach it.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [sealedKey]
+              properties:
+                sealedKey:
+                  $ref: "#/components/schemas/SealedKey"
+                  description: The folder or file key sealed to the key you are attaching.
+      responses:
+        "201":
+          description: Attached.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/KeyEntry" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      description: The `access_token` from `POST /api/v1/oauth/token`. Lasts 15 minutes.
+    oauthClientCredentials:
+      type: oauth2
+      flows:
+        clientCredentials:
+          tokenUrl: /api/v1/oauth/token
+          scopes:
+            download: Download files the key can reach.
+            upload: Upload new files to the owner's Drive.
+            manage-sharing: Manage key entries and shares where the key is admin.
+            delete: Move files to the trash where the key is admin.
+
+  parameters:
+    FileId:
+      name: fileId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    FolderId:
+      name: folderId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    EntryId:
+      name: entryId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+
+  headers:
+    BilledTo:
+      description: Who is charged. Always `owner`.
+      schema: { type: string, const: owner }
+    MeteredBytes:
+      description: Bytes this request adds to the owner's usage.
+      schema: { type: integer }
+    UsageBytes:
+      description: The owner's storage usage after this request.
+      schema: { type: integer }
+    QuotaBytes:
+      description: The owner's plan quota in bytes, `-1` for unlimited.
+      schema: { type: integer }
+
+  responses:
+    BadRequest:
+      description: "`invalid_request`: malformed id, header, body or parameter."
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    Unauthorized:
+      description: "`invalid_client` (missing, bad or revoked credentials) or `token_expired` (get a new token)."
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    PaymentRequired:
+      description: "`payment_required`: the owner's plan does not allow this. `code` says why."
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    Forbidden:
+      description: "`insufficient_scope` (the key's scopes do not allow it; `required` names the scope) or `insufficient_role`."
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    NotFound:
+      description: "`not_found`. A resource that does not exist and one your key cannot reach answer the same way."
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    Conflict:
+      description: "`conflict`, `owner_immutable` or `unsupported_format`."
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    TooLarge:
+      description: "`payload_too_large`: the body is over the size limit."
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    RateLimited:
+      description: "`rate_limited`. Wait for `Retry-After` seconds."
+      headers:
+        Retry-After:
+          schema: { type: integer }
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    Unavailable:
+      description: "`unavailable`: a temporary outage. Retry with backoff. Never treat it as a denial."
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+
+  schemas:
+    Error:
+      type: object
+      required: [error, message]
+      properties:
+        error:
+          type: string
+          examples: [not_found]
+        message:
+          type: string
+        required:
+          type: string
+          description: For `insufficient_scope`, the scope that was needed.
+        code:
+          type: [string, "null"]
+          description: For `payment_required`, the plan reason.
+      additionalProperties: true
+
+    OAuthError:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: string
+          enum: [invalid_request, invalid_client, invalid_scope, unsupported_grant_type]
+        error_description:
+          type: string
+
+    TokenRequest:
+      type: object
+      required: [grant_type]
+      properties:
+        grant_type:
+          type: string
+          const: client_credentials
+        client_id:
+          type: string
+          pattern: "^utc_[1-9A-HJ-NP-Za-km-z]{22}$"
+          description: Required unless sent with HTTP Basic auth.
+        client_secret:
+          type: string
+          pattern: "^[A-Za-z0-9_-]{43}$"
+          description: |
+            The OAuth value derived from your client secret:
+            base64url(HKDF-SHA256(secret, salt = empty, info = "untrace:client-key:oauth:v1", 32 bytes)).
+            Never the `untrace_sk_v1_` secret itself. Required unless sent with HTTP Basic auth.
+        scope:
+          type: string
+          description: Optional. Space-separated subset of the key's scopes. The token gets the intersection.
+
+    TokenResponse:
+      type: object
+      required: [access_token, token_type, expires_in, scope]
+      properties:
+        access_token: { type: string }
+        token_type: { type: string, const: Bearer }
+        expires_in: { type: integer, const: 900 }
+        scope:
+          type: string
+          description: Space-separated scopes granted to this token.
+          examples: ["download upload"]
+
+    SealedKey:
+      type: string
+      description: A 32-byte key sealed to an X25519 public key, standard base64 (see "Sealed keys").
+      pattern: "^[A-Za-z0-9+/]{120,400}={0,2}$"
+
+    Role:
+      type: string
+      enum: [admin, editor, viewer]
+      description: "`owner` exists but is never granted, changed or removed through the API."
+
+    Scope:
+      type: string
+      enum: [download, upload, manage-sharing, delete]
+
+    OwnerShareKey:
+      type: object
+      required: [wallet, publicKey, keySignature]
+      properties:
+        wallet: { type: string, description: The account address (base58). }
+        publicKey: { type: string, description: X25519 public key, standard base64. }
+        keySignature: { type: string, description: "Signature over `untrace:share-key:v1:` + publicKey, base58." }
+        signedMessagePrefix: { type: string, const: "untrace:share-key:v1:" }
+
+    File:
+      type: object
+      required: [fileId, name, size, mime, role, createdAt]
+      properties:
+        fileId: { type: string, format: uuid }
+        name: { type: string }
+        size: { type: integer, description: Stored size in bytes. }
+        mime: { type: string }
+        role:
+          type: string
+          enum: [owner, admin, editor, viewer]
+        createdAt: { type: string, format: date-time }
+        folderId:
+          type: [string, "null"]
+          format: uuid
+
+    FileWithKey:
+      allOf:
+        - $ref: "#/components/schemas/File"
+        - type: object
+          required: [wrappedKey]
+          properties:
+            wrappedKey:
+              $ref: "#/components/schemas/SealedKey"
+              description: |
+                The key where your winning entry sits, sealed to your key: the
+                file key itself when the entry is on the file, otherwise a
+                folder key. Open `keyPath` in order with it to reach the file key.
+            keyPath:
+              type: array
+              items: { $ref: "#/components/schemas/SealedKey" }
+
+    FileList:
+      type: object
+      required: [files, nextCursor]
+      properties:
+        files:
+          type: array
+          items: { $ref: "#/components/schemas/File" }
+        nextCursor:
+          type: [string, "null"]
+          format: uuid
+
+    Folder:
+      type: object
+      required: [folderId, name, parentId, role, boxPublicKey, sealedKey, keyPath, createdAt]
+      properties:
+        folderId: { type: string, format: uuid }
+        name: { type: string }
+        parentId: { type: [string, "null"], format: uuid }
+        role:
+          type: string
+          enum: [owner, admin, editor, viewer]
+        boxPublicKey:
+          type: string
+          description: The folder's X25519 public key. Seal a new subfolder's or file's key to it.
+        sealedKey:
+          $ref: "#/components/schemas/SealedKey"
+          description: The key of the folder where your winning entry sits, sealed to your key.
+        keyPath:
+          type: array
+          description: Sealed keys to open in order below that folder, down to this one. Empty when the entry is on this folder.
+          items: { $ref: "#/components/schemas/SealedKey" }
+        createdAt: { type: string, format: date-time }
+
+    FolderList:
+      type: object
+      required: [folders, nextCursor]
+      properties:
+        folders:
+          type: array
+          items: { $ref: "#/components/schemas/Folder" }
+        nextCursor: { type: [string, "null"], format: uuid }
+
+    KeyType:
+      type: string
+      enum: [passkey, client]
+      description: "`passkey`: an account's passkey. `client`: a developer client credential. Every entry is a key a person holds."
+
+    KeyEntry:
+      type: object
+      required: [entryId, keyType, keyId, role, scopes, createdAt]
+      properties:
+        entryId: { type: string, format: uuid }
+        keyType: { $ref: "#/components/schemas/KeyType" }
+        keyId:
+          type: string
+          description: The key's public identifier (an account address or a client id).
+        role:
+          type: string
+          enum: [owner, admin, editor, viewer, none]
+          description: "`none` is an explicit block: it denies this key here even if a parent folder grants it."
+        scopes:
+          type: array
+          items: { $ref: "#/components/schemas/Scope" }
+        createdAt: { type: string, format: date-time }
+
+    KeyEntryList:
+      type: object
+      required: [entries]
+      properties:
+        entries:
+          type: array
+          items: { $ref: "#/components/schemas/KeyEntry" }
+
+    KeyEntryCreate:
+      type: object
+      required: [keyType, keyId, role, sealedKey]
+      properties:
+        keyType: { $ref: "#/components/schemas/KeyType" }
+        keyId:
+          type: string
+          description: |
+            A key held by your own account. A key of another user is attached
+            through Sharing, never here. A block (`none`) may name any key
+            except the owner's.
+        role:
+          type: string
+          enum: [admin, editor, viewer, none]
+        scopes:
+          type: array
+          items: { $ref: "#/components/schemas/Scope" }
+        sealedKey:
+          $ref: "#/components/schemas/SealedKey"
+          description: The folder or file key sealed to the attached key. Not needed for `none`.
+
+    KeyEntryChange:
+      type: object
+      properties:
+        role:
+          type: string
+          enum: [admin, editor, viewer, none]
+        scopes:
+          type: array
+          items: { $ref: "#/components/schemas/Scope" }
+
+    Share:
+      type: object
+      required: [shareId, resourceType, resourceId, role, from, createdAt]
+      properties:
+        shareId: { type: string, format: uuid }
+        resourceType: { type: string, enum: [folder, file] }
+        resourceId: { type: string, format: uuid }
+        role: { $ref: "#/components/schemas/Role" }
+        from: { type: string, description: The sharing user's username or address. }
+        sealedKey:
+          $ref: "#/components/schemas/SealedKey"
+          description: In the recipient's view only. The key sealed to the recipient's sharing key.
+        createdAt: { type: string, format: date-time }
+
+    Removed:
+      type: object
+      required: [removed]
+      properties:
+        removed: { type: boolean, const: true }

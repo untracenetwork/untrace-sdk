@@ -1,0 +1,15 @@
+{
+  "extends": "../tsconfig.base.json",
+  "compilerOptions": {
+    "jsx": "react-jsx",
+    "baseUrl": ".",
+    "paths": {
+      "@untracenetwork/sdk": ["../packages/core/src/index.ts"],
+      "@untracenetwork/sdk/backend": ["../packages/core/src/backend.ts"],
+      "@untracenetwork/next": ["../packages/next/src/index.ts"],
+      "@untracenetwork/react": ["../packages/react/src/index.ts"],
+      "@untracenetwork/vue": ["../packages/vue/src/index.ts"]
+    }
+  },
+  "include": ["**/*.ts", "**/*.tsx"]
+}
