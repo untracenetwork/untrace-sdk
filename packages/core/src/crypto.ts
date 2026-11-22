@@ -21,6 +21,7 @@
 
 import { ed25519, x25519 } from "@noble/curves/ed25519"
 import { hsalsa, xsalsa20poly1305 } from "@noble/ciphers/salsa"
+import { sha256 } from "@noble/hashes/sha2"
 
 import { concatBytes, fromBase58, fromBase64, toBase64, toBase64Url, utf8 } from "./encoding"
 
@@ -77,6 +78,37 @@ async function hkdf32(ikm: Uint8Array, info: string): Promise<Uint8Array> {
   const base = await subtle.importKey("raw", ikm as BufferSource, "HKDF", false, ["deriveBits"])
   const bits = await subtle.deriveBits({ name: "HKDF", hash: "SHA-256", salt: new Uint8Array(0), info: utf8(info) as BufferSource }, base, 256)
   return new Uint8Array(bits)
+}
+
+/** An incremental SHA-256 (for integrity checks on data that arrives in pieces). */
+export interface Sha256Hasher {
+  update(data: Uint8Array): Sha256Hasher
+  /** The digest as lowercase hex. The hasher cannot be used after this. */
+  digestHex(): string
+}
+
+/** SHA-256 of `data`, lowercase hex. */
+export function sha256Hex(data: Uint8Array): string {
+  return toHexString(sha256(data))
+}
+
+/** Start an incremental SHA-256: `sha256Hasher().update(a).update(b).digestHex()`. */
+export function sha256Hasher(): Sha256Hasher {
+  const h = sha256.create()
+  const api: Sha256Hasher = {
+    update(data) {
+      h.update(data)
+      return api
+    },
+    digestHex: () => toHexString(h.digest()),
+  }
+  return api
+}
+
+function toHexString(b: Uint8Array): string {
+  let s = ""
+  for (const x of b) s += x.toString(16).padStart(2, "0")
+  return s
 }
 
 /** Deterministic: the same secret always gives the same OAuth value and box key pair. */

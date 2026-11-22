@@ -15,6 +15,9 @@ Licence changes from MIT to Apache-2.0.
   `vault` folder with a `parentId` is refused before any request. Every `Folder` carries `vault`.
 - Contract synced from untrace-drive main `1b18365` to `7b270d9` (adds `vault`, the folder `scope`
   label, share `status: awaiting_owner` and `getVaultEntry`).
+- `sha256Hex(bytes)` and `sha256Hasher()` (incremental), so callers that check the integrity of
+  downloaded data (for example backup parts against a manifest) need no crypto of their own.
+  Uses `@noble/hashes` (already a dependency of `@noble/curves`).
 
 ### Packages
 

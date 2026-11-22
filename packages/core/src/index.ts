@@ -69,6 +69,9 @@ export {
   openSealed,
   verifyShareKey,
   randomBytes,
+  sha256Hex,
+  sha256Hasher,
+  type Sha256Hasher,
   type ClientKeys,
 } from "./crypto"
 export {
