@@ -119,6 +119,8 @@ tags:
     description: Share with another user, who attaches their own key.
   - name: Owner
     description: The Drive account that owns your key.
+  - name: Vault
+    description: Vault entries the owner shared with your agent key.
 
 paths:
   /api/v1/oauth/token:
@@ -197,6 +199,50 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/OwnerShareKey" }
         "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+
+  /api/v1/vault/entries:
+    get:
+      tags: [Vault]
+      operationId: getVaultEntry
+      x-status: live
+      summary: A Vault entry shared with this agent
+      description: |
+        For agent keys made through an agent link. `ref` is the resource of a
+        Vault grant the owner approved for this agent (read or read and write).
+        The answer is the entry sealed to the agent's own box public key in the
+        owner's browser, and signed by the owner:
+
+        ```
+        data = base64(JSON { v: 1, owner, sealed, sig })
+          sealed = sealed key format (see Sealed keys) of the padded JSON
+                   { v: 1, ref, entry_id, kind, label, value, totp, tags, updated_at }
+          sig    = Ed25519 by `owner` (base64) over the UTF-8 lines
+                   "untrace:vault-agent-copy:v1", "client: <your client id>",
+                   "ref: <ref>", "sealed: <sealed>", joined with a newline
+        ```
+
+        Check `sig` against the owner's address (base58) and open `sealed` with
+        your agent's box secret key. Drive cannot open it. For a `totp` entry,
+        compute the code yourself from the seed (RFC 6238). No grant, an expired
+        or revoked grant: 404 `not_found`. A write-only grant: 403. A live grant
+        the owner has not shared yet: 404 `not_sealed`.
+      parameters:
+        - name: ref
+          in: query
+          required: true
+          schema: { type: string, minLength: 1, maxLength: 256 }
+      responses:
+        "200":
+          description: The sealed entry.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AgentVaultEntry" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
         "404": { $ref: "#/components/responses/NotFound" }
         "429": { $ref: "#/components/responses/RateLimited" }
         "503": { $ref: "#/components/responses/Unavailable" }
@@ -577,6 +623,17 @@ paths:
         needs the `upload` scope; your key gets an `admin` entry on it), or
         inside a folder where your key is `editor` or above with `upload` (the
         new folder inherits your access there; no new entry is made).
+
+        Set `vault: true` to make a top-level folder a Files vault on the
+        owner's Vault page. This is opt-in: omitted or `false` keeps it a plain
+        folder, which does not use a vault slot. Existing folders stay plain;
+        there is no backfill. The server reserves a slot in the owner's plan
+        before creating the folder. Free includes 3 vaults across all types
+        (the Personal vault included); a full plan answers 409 `vault_limit`
+        and no folder is created. A Free account has vaults from the start.
+        A subfolder with `vault: true` answers 400 `vault_needs_top_level`.
+        The same `upload` scope is required; paired keys cannot create
+        top-level folders, with or without `vault`.
       requestBody:
         required: true
         content:
@@ -587,6 +644,10 @@ paths:
               properties:
                 name: { type: string, minLength: 1, maxLength: 256 }
                 parentId: { type: [string, "null"], format: uuid }
+                vault:
+                  type: boolean
+                  default: false
+                  description: Opt-in Files vault. Top-level only. Counts toward the owner's vault limit.
                 boxPublicKey:
                   type: string
                   description: |
@@ -609,7 +670,16 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Folder" }
-        "400": { $ref: "#/components/responses/BadRequest" }
+        "400":
+          description: "`invalid_request`, or `vault_needs_top_level` when `vault: true` names a parent."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "409":
+          description: "`vault_limit`: the owner's vault limit is full. No folder is created."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "402": { $ref: "#/components/responses/PaymentRequired" }
         "403": { $ref: "#/components/responses/Forbidden" }
@@ -645,6 +715,9 @@ paths:
         `boxPublicKey`); `null` moves it to the top level (the owner's keys
         only, with `ownerSealedKey`). A move that would put a folder inside
         itself or one of its subfolders is refused (409 `conflict`).
+        A Files vault must stay at the top level: moving it into a folder
+        answers 400 `vault_needs_top_level`. This route does not convert a
+        plain folder into a vault.
       requestBody:
         required: true
         content:
@@ -673,7 +746,12 @@ paths:
       operationId: deleteFolder
       x-status: live
       summary: Move a folder and its contents to the trash
-      description: Role `admin` and the `delete` scope. Subfolders and their files go to the trash with it.
+      description: |
+        Role `admin` and the `delete` scope. Subfolders and their files go to
+        the trash with it. Deleting an opt-in Files vault also frees its vault
+        slot. Deleting from the owner's Vault page is different: that action
+        requires an empty vault and the server refuses nonempty vaults with
+        409 `folder_not_empty`.
       responses:
         "200":
           description: Trashed.
@@ -802,6 +880,11 @@ paths:
         sealed to that user's published sharing key. Nothing is attached yet: the
         recipient attaches their OWN key when they accept. Nobody can attach a key
         in someone else's name.
+
+        Every share made with a developer key waits for the account that owns
+        the key. The recipient does not see it, and cannot accept it, until that
+        owner approves it in Drive (Settings > Agents & SDK > Shares waiting
+        for you). The answer carries `status: awaiting_owner`.
       requestBody:
         required: true
         content:
@@ -835,7 +918,7 @@ paths:
       summary: Shares offered to the account that owns your key
       responses:
         "200":
-          description: Pending shares.
+          description: Pending shares the sharing account has approved.
           content:
             application/json:
               schema:
@@ -939,6 +1022,12 @@ components:
           schema: { $ref: "#/components/schemas/Error" }
     Unauthorized:
       description: "`invalid_client` (missing, bad or revoked credentials) or `token_expired` (get a new token)."
+      headers:
+        WWW-Authenticate:
+          description: >-
+            `Bearer resource_metadata="https://drive.untrace.network/.well-known/oauth-protected-resource/api/v1"`
+            (RFC 9728): where to find this API's OAuth metadata.
+          schema: { type: string }
       content:
         application/json:
           schema: { $ref: "#/components/schemas/Error" }
@@ -948,7 +1037,7 @@ components:
         application/json:
           schema: { $ref: "#/components/schemas/Error" }
     Forbidden:
-      description: "`insufficient_scope` (the key's scopes do not allow it; `required` names the scope) or `insufficient_role`."
+      description: "`insufficient_scope` (the key's scopes do not allow it; `required` names the scope), `insufficient_role`, or `insufficient_grant` (an agent key: the owner's grant on this item does not cover it; `required` is `read` or `write`, absent for actions agents never do)."
       content:
         application/json:
           schema: { $ref: "#/components/schemas/Error" }
@@ -993,7 +1082,7 @@ components:
           type: string
         required:
           type: string
-          description: For `insufficient_scope`, the scope that was needed.
+          description: For `insufficient_scope`, the scope that was needed. For `insufficient_grant`, the grant mode (`read` or `write`).
         code:
           type: [string, "null"]
           description: For `payment_required`, the plan reason.
@@ -1066,6 +1155,14 @@ components:
         keySignature: { type: string, description: "Signature over `untrace:share-key:v1:` + publicKey, base58." }
         signedMessagePrefix: { type: string, const: "untrace:share-key:v1:" }
 
+    AgentVaultEntry:
+      type: object
+      required: [owner, data, version]
+      properties:
+        owner: { type: string, description: The owner's address (base58). Check the signature against it. }
+        data: { type: string, description: The sealed and signed entry, standard base64. }
+        version: { type: integer, minimum: 1 }
+
     File:
       type: object
       required: [fileId, name, size, mime, role, createdAt]
@@ -1111,8 +1208,11 @@ components:
 
     Folder:
       type: object
-      required: [folderId, name, parentId, role, boxPublicKey, sealedKey, keyPath, createdAt]
+      required: [folderId, name, parentId, role, boxPublicKey, sealedKey, keyPath, createdAt, vault]
       properties:
+        vault:
+          type: boolean
+          description: "True for a top-level folder created with `vault: true`; false for plain folders and subfolders."
         folderId: { type: string, format: uuid }
         name: { type: string }
         parentId: { type: [string, "null"], format: uuid }
@@ -1130,6 +1230,27 @@ components:
           description: Sealed keys to open in order below that folder, down to this one. Empty when the entry is on this folder.
           items: { $ref: "#/components/schemas/SealedKey" }
         createdAt: { type: string, format: date-time }
+        scope:
+          $ref: "#/components/schemas/ItemScope"
+          description: "On list answers (GET /folders): where the folder comes from. A key is still granted per folder; this only labels it."
+
+    ItemScope:
+      type: object
+      required: [kind, id, name, own]
+      properties:
+        kind:
+          type: string
+          enum: [own, team, project, personal]
+          description: "`own`: your own folder. `team`: the folder's owner shares a team with you. `personal`: anyone else."
+        id:
+          type: string
+          description: "The team id (team), the owner's account address (personal), empty for own."
+        name:
+          type: string
+          description: "The team name (team), the owner's username or empty (personal), empty for own."
+        own:
+          type: boolean
+          description: "True for your own folders, and for a team you own."
 
     FolderList:
       type: object
@@ -1215,6 +1336,10 @@ components:
           $ref: "#/components/schemas/SealedKey"
           description: In the recipient's view only. The key sealed to the recipient's sharing key.
         createdAt: { type: string, format: date-time }
+        status:
+          type: string
+          enum: [awaiting_owner]
+          description: On create only. The share waits until the key's account owner approves it in Drive.
 
     Removed:
       type: object

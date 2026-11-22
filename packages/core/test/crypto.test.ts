@@ -15,6 +15,8 @@ import {
   sealToPublicKey,
   verifyShareKey,
   randomBytes,
+  sha256Hex,
+  sha256Hasher,
   CLIENT_SECRET_PREFIX,
 } from "../src/crypto"
 import { fromBase64, fromBase58, toBase58, toBase64, toBase64Url, toHex, utf8 } from "../src/encoding"
@@ -138,6 +140,18 @@ describe("share key signature", () => {
     expect(verifyShareKey({ wallet: "0OIl", publicKey, keySignature })).toBe(false)
     expect(verifyShareKey({ wallet, publicKey, keySignature: toBase58(new Uint8Array(10)) })).toBe(false)
     expect(verifyShareKey({ wallet: toBase58(new Uint8Array(32)), publicKey, keySignature })).toBe(false)
+  })
+})
+
+describe("sha256", () => {
+  it("matches the FIPS 180-2 vectors, in one call and incrementally", () => {
+    expect(sha256Hex(utf8(""))).toBe("e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855")
+    expect(sha256Hex(utf8("abc"))).toBe("ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad")
+    const h = sha256Hasher()
+    for (const part of ["a", "b", "c"]) h.update(utf8(part))
+    expect(h.digestHex()).toBe(sha256Hex(utf8("abc")))
+    const big = randomBytes(300_000)
+    expect(sha256Hasher().update(big.subarray(0, 123_457)).update(big.subarray(123_457)).digestHex()).toBe(sha256Hex(big))
   })
 })
 

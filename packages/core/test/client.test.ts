@@ -346,7 +346,7 @@ describe("generic call() and planned operations", () => {
   it("is generated from the recorded contract commit", () => {
     expect(CONTRACT_COMMIT).toBe(source.commit)
     const live = Object.values(OPERATIONS).filter((o) => o.status === "live").length
-    expect(live).toBe(25)
+    expect(live).toBe(26)
     for (const o of Object.values(OPERATIONS)) expect(o.path.startsWith("/api/v1/")).toBe(true)
   })
 })

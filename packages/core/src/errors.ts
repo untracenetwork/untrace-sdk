@@ -19,6 +19,8 @@ export type UntraceErrorCode =
   | "conflict"
   | "owner_immutable"
   | "unsupported_format"
+  | "vault_limit"
+  | "vault_needs_top_level"
   | "payload_too_large"
   | "rate_limited"
   | "unavailable"
@@ -136,7 +138,7 @@ export class UntracePaymentRequiredError extends UntraceError {
   }
 }
 
-/** 409 `conflict`, `owner_immutable` or `unsupported_format`. */
+/** 409 `conflict`, `owner_immutable`, `unsupported_format` or `vault_limit` (the owner's vault slots are full). */
 export class UntraceConflictError extends UntraceError {
   constructor(init: UntraceErrorInit) {
     super(init)
@@ -239,6 +241,7 @@ export function errorFromResponse(status: number, body: Record<string, unknown>,
     case "conflict":
     case "owner_immutable":
     case "unsupported_format":
+    case "vault_limit":
       return new UntraceConflictError(init)
     case "payload_too_large":
       return new UntraceTooLargeError(init)
