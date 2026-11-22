@@ -5,8 +5,16 @@ All packages in this repo share one version and are released together.
 ## 2.0.0 (unreleased)
 
 Thin wrappers over the Untrace Drive API v1, typed from the Drive OpenAPI contract
-(`docs/api/openapi.yaml` at untrace-drive main `1b18365`, recorded in `contract/SOURCE.json`).
+(`docs/api/openapi.yaml` at untrace-drive main `7b270d9`, recorded in `contract/SOURCE.json`).
 Licence changes from MIT to Apache-2.0.
+
+### Files vaults
+
+- `folders.create({ name, vault: true })` makes a top-level folder a Files vault on the owner's Vault
+  page (opt-in, one vault slot). A full plan answers 409 `vault_limit` (`UntraceConflictError`); a
+  `vault` folder with a `parentId` is refused before any request. Every `Folder` carries `vault`.
+- Contract synced from untrace-drive main `1b18365` to `7b270d9` (adds `vault`, the folder `scope`
+  label, share `status: awaiting_owner` and `getVaultEntry`).
 
 ### Packages
 

@@ -56,6 +56,8 @@ export interface StoredFolder {
   entries: Entry[]
   trashed: boolean
   createdAt: string
+  /** A top-level folder created with `vault: true` (a Files vault). */
+  vault?: boolean
 }
 
 export interface StoredFile {
@@ -116,6 +118,8 @@ export interface MockOptions {
   noFolder?: boolean
   /** Serve this boxPublicKey for every folder instead of the real one (a lying server). */
   fakeFolderBox?: string
+  /** Vault slots left for `vault: true` folders (default 3, like Free). 0 answers 409 vault_limit. */
+  vaultSlots?: number
 }
 
 function account(badSig = false) {
@@ -147,6 +151,7 @@ export function createMockDrive(opts: MockOptions = {}) {
     ["me-the-owner", owner],
   ])
   const failures = (opts.failures ?? []).map((f) => ({ ...f }))
+  let vaultSlots = opts.vaultSlots ?? 3
   const now = () => new Date().toISOString()
 
   let seeded: Promise<void> | null = null
@@ -240,6 +245,7 @@ export function createMockDrive(opts: MockOptions = {}) {
     sealedKey: g.sealedKey,
     keyPath: g.keyPath,
     createdAt: f.createdAt,
+    vault: f.vault === true,
   })
   const summary = (f: StoredFile, role: Role = f.role) => ({ fileId: f.fileId, name: f.name, size: f.body.length, mime: f.mime, role, createdAt: f.createdAt, folderId: f.folderId ?? null })
 
@@ -373,6 +379,9 @@ export function createMockDrive(opts: MockOptions = {}) {
       if (!b || typeof b.name !== "string" || !b.name) return err(400, "invalid_request", "invalid name")
       if (typeof b.boxPublicKey !== "string" || !BOX_RE.test(b.boxPublicKey)) return err(400, "invalid_request", "invalid boxPublicKey")
       const parentId = (b.parentId as string | null | undefined) ?? null
+      if (b.vault !== undefined && typeof b.vault !== "boolean") return err(400, "invalid_request", "invalid vault")
+      const vault = b.vault === true
+      if (vault && parentId !== null) return err(400, "vault_needs_top_level", "a Files vault must be a top-level folder")
       const folderId = crypto.randomUUID()
       let f: StoredFolder
       if (parentId === null) {
@@ -380,6 +389,10 @@ export function createMockDrive(opts: MockOptions = {}) {
         if (s) return s
         if (typeof b.sealedKey !== "string" || !SEALED_RE.test(b.sealedKey)) return err(400, "invalid_request", "invalid sealedKey")
         if (typeof b.ownerSealedKey !== "string" || !SEALED_RE.test(b.ownerSealedKey)) return err(400, "invalid_request", "invalid ownerSealedKey")
+        if (vault) {
+          if (vaultSlots <= 0) return err(409, "vault_limit", "Free includes up to 3 vaults. Upgrade for unlimited vaults.", { limit: 3, used: 3 })
+          vaultSlots--
+        }
         f = {
           folderId,
           name: b.name,
@@ -390,6 +403,7 @@ export function createMockDrive(opts: MockOptions = {}) {
           entries: [{ entryId: crypto.randomUUID(), keyType: "client", keyId: CLIENT_ID, role: "admin", scopes: [...scopes], sealedKey: b.sealedKey, createdAt: now() }],
           trashed: false,
           createdAt: now(),
+          vault,
         }
       } else {
         if (!canCreateIn(resolveFolder(parentId))) return notFound()
@@ -435,6 +449,8 @@ export function createMockDrive(opts: MockOptions = {}) {
         if (s) return s
         if (!isAdmin(g)) return notFound()
         f.trashed = true
+        // Deleting a Files vault frees its slot.
+        if (f.vault) vaultSlots++
         return json({ removed: true })
       }
     }

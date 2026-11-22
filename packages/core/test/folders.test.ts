@@ -80,6 +80,36 @@ describe("folders", () => {
     const ownerKey = drive.openOwnerFolderKey(stored)
     expect(toBase64((await deriveFolderBoxKeys(ownerKey)).publicKey)).toBe(stored.boxPublicKey)
     expect(sameBytes(await client.resourceKey({ type: "folder", id: f.folderId }), ownerKey)).toBe(true)
+    expect(f.vault).toBe(false)
+  })
+
+  it("creates a Files vault with vault: true (top level only) and reports vault on folders", async () => {
+    const { drive, client } = setup()
+    const v = await client.folders.create({ name: "db-backups", vault: true })
+    expect(v).toMatchObject({ name: "db-backups", parentId: null, role: "admin", vault: true })
+    const body = JSON.parse(new TextDecoder().decode(drive.requests.filter((r) => r.method === "POST" && r.url.endsWith("/api/v1/folders")).at(-1)!.body))
+    expect(body.vault).toBe(true)
+    expect(Object.keys(body).sort()).toEqual(["boxPublicKey", "name", "ownerSealedKey", "parentId", "sealedKey", "vault"])
+    const listed = (await client.folders.list()).folders
+    expect(listed.find((f) => f.folderId === v.folderId)?.vault).toBe(true)
+    expect(listed.find((f) => f.folderId === FOLDER_ID)?.vault).toBe(false)
+    expect((await client.folders.get(v.folderId)).vault).toBe(true)
+    // vault: false sends nothing extra.
+    await client.folders.create({ name: "plain", vault: false })
+    const plainBody = JSON.parse(new TextDecoder().decode(drive.requests.filter((r) => r.method === "POST" && r.url.endsWith("/api/v1/folders")).at(-1)!.body))
+    expect("vault" in plainBody).toBe(false)
+  })
+
+  it("refuses a vault subfolder before any request and maps 409 vault_limit to UntraceConflictError", async () => {
+    const { drive, client } = setup({ vaultSlots: 0 })
+    const before = drive.requests.length
+    await expect(client.folders.create({ name: "x", parentId: FOLDER_ID, vault: true })).rejects.toThrow(/top-level/)
+    await expect(client.folders.create({ name: "x", vault: "yes" as unknown as boolean })).rejects.toThrow(/true or false/)
+    expect(drive.requests.length).toBe(before)
+    const e = await client.folders.create({ name: "full", vault: true }).catch((x: unknown) => x)
+    expect(e).toBeInstanceOf(UntraceConflictError)
+    expect((e as UntraceConflictError).code).toBe("vault_limit")
+    expect([...drive.folders.values()].some((f) => f.name === "full")).toBe(false)
   })
 
   it("creates a subfolder sealed to the parent's checked public key and reaches it by key path", async () => {

@@ -75,6 +75,10 @@ await untrace.folders.rename(sub.folderId, "Q3 2026")
 await untrace.folders.move(sub.folderId, otherFolderId) // or null for the top level (owner keys only)
 await untrace.folders.trash(sub.folderId)
 
+// A Files vault: a top-level folder that shows on the owner's Vault page (uses one vault slot;
+// a full plan throws UntraceConflictError with code "vault_limit"). Every folder carries `vault`.
+const backups = await untrace.folders.create({ name: "db-backups", vault: true })
+
 // Key entries: each one is a key a person holds, with a role and scopes (needs manage-sharing).
 const entries = await untrace.keys.list({ type: "folder", id: sub.folderId })
 await untrace.keys.attach({ type: "folder", id: sub.folderId }, {

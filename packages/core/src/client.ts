@@ -834,6 +834,13 @@ export interface CreateFolderInput {
   name: string
   /** Create inside this folder (role editor or above with `upload`). Omit for the top level of your key's Drive. */
   parentId?: string | null
+  /**
+   * Make a top-level folder a Files vault on the owner's Vault page. Opt-in
+   * (default false); it uses one of the owner's vault slots, and a full plan
+   * answers 409 `vault_limit` (nothing is created). Top level only: with a
+   * `parentId` the SDK refuses before any request.
+   */
+  vault?: boolean
 }
 
 export class FoldersApi {
@@ -876,11 +883,14 @@ export class FoldersApi {
     const name = assertFileName(input?.name)
     const parentId = input.parentId ?? null
     if (parentId !== null) assertUuid(parentId, "parentId")
+    if (input.vault !== undefined && typeof input.vault !== "boolean") throw invalid("untrace: vault must be true or false")
+    if (input.vault && parentId !== null) throw invalid("untrace: a Files vault must be a top-level folder (vault_needs_top_level); omit parentId")
     const folderKey = randomBytes(32)
     try {
       const { publicKey, secretKey } = await deriveFolderBoxKeys(folderKey)
       secretKey.fill(0)
       const body: Record<string, unknown> = { name, parentId, boxPublicKey: toBase64(publicKey) }
+      if (input.vault) body.vault = true
       if (parentId === null) {
         const sealed = await this.c.sealFileKey(folderKey, call)
         body.sealedKey = sealed.self
